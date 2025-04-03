@@ -5,3 +5,18 @@ Smart medical assistant tool that records, transcribes, and summarizes medical a
 
 Future iterations of the tool will allow users to interact with a chat assistant to answer
 questions about their past appointments.
+
+
+## Instructions:
+
+You need to install Whisper (locally) to transcribe audio:
+
+```
+pip install git+https://github.com/openai/whisper.git
+```
+
+And then you need to install FFmpeg to record and process the audio files:
+
+```
+sudo apt install ffmpeg
+```
