@@ -176,3 +176,5 @@ cython_debug/
 # media
 appts-audio/
 transcript.txt
+diarization.json
+asr_chunks.json
