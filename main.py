@@ -1,30 +1,88 @@
-"""Medical appointment transcription with speaker diarization"""
+"""Medical appointment transcription with speaker diarization using Whisper, PyAnnote, and local post-processing."""
 
 import os
 import subprocess
+import json
 from datetime import timedelta
-
-import sounddevice as sd
-import whisper
-import yt_dlp
 from dotenv import load_dotenv
-from pyannote.audio import Pipeline
+from pyannote.audio import Pipeline as PyannotePipeline
+from transformers import pipeline as hf_pipeline
+import sounddevice as sd
 from scipy.io.wavfile import write
+import yt_dlp
+import requests
 
 
 # Constants
 WAV_PATH = "./appts-audio/example_appt.wav"
-EXAMPLE_AUDIO_FILE = "example_appt.wav"
 YOUTUBE_URL = "https://www.youtube.com/watch?v=SerstX6D_CU"
+DIARIZATION_CACHE = "diarization.json"
+ASR_CACHE = "asr_chunks.json"
 
 
-def apply_symlink_patch():
-    """Configures environment and symlink behavior to avoid Windows symlink errors."""
+def apply_light_rules(text_segments):
+    """Apply light rule-based fixes like speaker switch on common phrases."""
+    cleaned = []
+    for seg in text_segments:
+        text = seg["text"].strip()
+        if text.lower().startswith("yeah") or text.lower().startswith("no"):
+            seg["speaker_override"] = True
+        cleaned.append(seg)
+    return cleaned
+
+
+def clean_with_local_llm(aligned_segments):
+    """Use a local Mistral model via Ollama to clean up diarized transcript with strict prompt."""
+    import subprocess
+    from datetime import timedelta
+
+    # Construct the input transcript text with timestamps and speaker labels
+    input_text = "".join(
+        f"[{str(timedelta(seconds=int(s['start'])))}] {s['speaker']}: {s['text']}\n"
+        for s in aligned_segments
+    )
+
+    # Safer prompt that discourages hallucination
+    prompt = (
+        "You are reviewing a diarized medical appointment transcript.\n"
+        "Each line has a timestamp, a speaker label, and a spoken utterance.\n"
+        "Your job is to:\n"
+        "- Fix incorrect speaker labels if obvious.\n"
+        "- Do NOT add names or titles like 'Dr.' or 'Cat'.\n"
+        "- Do NOT change any words from the original.\n"
+        "- If a line contains responses from both speakers, split it.\n"
+        "- Return only the cleaned transcript, in this format:\n"
+        "  [HH:MM:SS] SPEAKER_X: Original text\n"
+        "\nTranscript:\n"
+        f"{input_text}"
+    )
+
+
+    # Call Mistral via Ollama
+    result = subprocess.run(
+        ["ollama", "run", "mistral"],
+        input=prompt.encode("utf-8"),
+        capture_output=True,
+        check=True
+    )
+
+    output = result.stdout.decode("utf-8")
+
+    # Only keep cleaned lines that match the expected output pattern
+    cleaned_lines = [
+        line for line in output.splitlines()
+        if line.strip().startswith("[") and ":" in line
+    ]
+
+    return cleaned_lines
+
+
+def configure_symlinks():
+    """Configure symlink workaround for Windows."""
     import shutil
     from pathlib import Path
 
     def safe_symlink_to(self, target, target_is_directory=False):
-        """Replace symlink with copy for files and directories (Windows-safe)."""
         try:
             if self.exists():
                 self.unlink()
@@ -36,109 +94,88 @@ def apply_symlink_patch():
             print(f"⚠️ Failed to mimic symlink, copying instead. {e}")
 
     Path.symlink_to = safe_symlink_to
-
-    # Disable symlinks to avoid issues on Windows
     os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
     os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
     os.environ["SPEECHBRAIN_FETCHING_STRATEGY"] = "copy"
 
 
+def record_audio(filename="appointment.wav", duration=30, fs=44100):
+    print("Recording... Speak now.")
+    audio = sd.rec(int(duration * fs), samplerate=fs, channels=1)
+    sd.wait()
+    write(filename, fs, audio)
+    print(f"Recording saved as {filename}")
+
+
 def transcribe_audio():
-    """Run speaker diarization and transcription, then save a labeled transcript."""
     print("Loading diarization model...")
     load_dotenv()
     hf_token = os.getenv("HF_TOKEN")
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization@2.1",
-        use_auth_token=hf_token
+    diarization_pipeline = PyannotePipeline.from_pretrained(
+        "pyannote/speaker-diarization@2.1", use_auth_token=hf_token
     )
 
-    print("Running diarization...")
-    diarization = pipeline(WAV_PATH, num_speakers=2)
+    if os.path.exists(DIARIZATION_CACHE):
+        print("Loading cached diarization result...")
+        with open(DIARIZATION_CACHE, "r", encoding="utf-8") as f:
+            diarization_segments = json.load(f)
+    else:
+        print("Running diarization...")
+        diarization_result = diarization_pipeline(WAV_PATH)
+        diarization_segments = [
+            {"start": turn.start, "end": turn.end, "speaker": speaker}
+            for turn, _, speaker in diarization_result.itertracks(yield_label=True)
+        ]
+        with open(DIARIZATION_CACHE, "w", encoding="utf-8") as f:
+            json.dump(diarization_segments, f, indent=2)
 
-    print("Running Whisper transcription...")
-    whisper_model = whisper.load_model("base")
-    whisper_result = whisper_model.transcribe(WAV_PATH, word_timestamps=False)
+    print("Loading Whisper model via Hugging Face pipeline...")
+    asr_pipeline = hf_pipeline(
+        "automatic-speech-recognition",
+        model="openai/whisper-base",
+        chunk_length_s=30,
+        stride_length_s=(5, 5),
+        return_timestamps=True,
+        generate_kwargs={"max_new_tokens": 400},
+        device=-1,
+    )
 
-    for i, segment in enumerate(whisper_result["segments"]):
-        segment["id"] = i  # Assign unique IDs for tracking
+    if os.path.exists(ASR_CACHE):
+        print("Loading cached ASR transcription...")
+        with open(ASR_CACHE, "r", encoding="utf-8") as f:
+            chunks = json.load(f)
+    else:
+        print("Running transcription...")
+        asr_result = asr_pipeline(WAV_PATH)
+        chunks = apply_light_rules(asr_result["chunks"])
+        with open(ASR_CACHE, "w", encoding="utf-8") as f:
+            json.dump(chunks, f, indent=2)
 
-    final_transcript = []
-    used_segments = set()
+    print("Aligning speakers to transcript...")
+    combined = []
+    for chunk in chunks:
+        start, end = chunk["timestamp"]
+        text = chunk["text"]
+        speaker = "unknown"
+        for seg in diarization_segments:
+            if seg["start"] <= start < seg["end"] or seg["start"] < end <= seg["end"]:
+                speaker = seg["speaker"]
+                break
+        if chunk.get("speaker_override"):
+            speaker = "SPEAKER_01" if speaker == "SPEAKER_00" else "SPEAKER_00"
+        combined.append({"speaker": speaker, "start": start, "end": end, "text": text})
 
-    # Collect diarization segments with Whisper
-    for segment in diarization.itertracks(yield_label=True):
-        start = segment[0].start
-        end = segment[0].end
-        speaker = segment[2]
-
-        matched_text = []
-        for s in whisper_result["segments"]:
-            if s["start"] >= start and s["end"] <= end and s["id"] not in used_segments:
-                matched_text.append(s["text"].strip())
-                used_segments.add(s["id"])
-
-        if matched_text:
-            combined = " ".join(matched_text)
-            timestamp = f"[{str(timedelta(seconds=int(start)))}]"
-            final_transcript.append(f"{timestamp} {speaker}: {combined}")
-
-    # Handle early segments not captured in diarization
-    diarization_start = next(diarization.itertracks(yield_label=True))[0].start
-    early_segments = [
-        s for s in whisper_result["segments"]
-        if s["start"] < diarization_start and s["id"] not in used_segments
-    ]
-    if early_segments:
-        early_text = " ".join(s["text"].strip() for s in early_segments)
-        timestamp = f"[{str(timedelta(seconds=int(early_segments[0]['start'])))}]"
-        final_transcript.insert(0, f"{timestamp} SPEAKER_XX: {early_text}")
-        print("👂 Prepended early speech segment before diarization window...")
+    print("Cleaning transcript with local LLM...")
+    cleaned_transcript = clean_with_local_llm(combined)
 
     print("\nSpeaker-labeled Transcript:\n")
-    transcript_text = "\n".join(final_transcript)
-    print(transcript_text)
+    print("\n".join(cleaned_transcript))
 
     with open("transcript.txt", "w", encoding="utf-8") as f:
-        f.write(transcript_text)
+        f.write("\n".join(cleaned_transcript))
         print("\nTranscript saved as transcript.txt ✅")
 
 
-def download_example_audio():
-    """Downloads and trims a YouTube video to a 2-minute WAV audio clip."""
-    output_dir = "./appts-audio"
-    os.makedirs(output_dir, exist_ok=True)
-
-    temp_base = os.path.join(output_dir, "temp_full_audio")
-    temp_filename = f"{temp_base}.wav"
-    trimmed_filename = os.path.join(output_dir, EXAMPLE_AUDIO_FILE)
-
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": temp_base,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "wav",
-            "preferredquality": "192",
-        }],
-        "quiet": False,
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([YOUTUBE_URL])
-        print(f"Downloaded full audio to temp file: {temp_filename}")
-
-    subprocess.run([
-        "ffmpeg", "-y", "-i", temp_filename,
-        "-t", "120",
-        "-acodec", "copy", trimmed_filename
-    ], check=True)
-
-    print(f"Trimmed audio to first 2 minutes → {EXAMPLE_AUDIO_FILE}")
-    os.remove(temp_filename)
-
-
 if __name__ == "__main__":
-    #download_example_audio()
-    apply_symlink_patch()
+    configure_symlinks()
     transcribe_audio()
