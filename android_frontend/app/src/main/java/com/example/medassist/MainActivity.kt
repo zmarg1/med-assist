@@ -2,11 +2,12 @@ package com.example.medassist
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.media.MediaRecorder // Added
+import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment // Added
-import android.util.Log // For logging
+import android.os.Environment
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,11 +26,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.medassist.ui.theme.MedAssistTheme
-import java.io.File // Added
-import java.io.IOException // Added
-import java.text.SimpleDateFormat // Added
-import java.util.Date // Added
-import java.util.Locale // Added
+import java.io.File
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     // --- Member variable for MediaRecorder ---
@@ -71,7 +72,6 @@ class MainActivity : ComponentActivity() {
             Log.d("AudioRecording", "File created at: $absolutePath")
         }
     }
-
 
     // --- Function to start recording ---
     private fun startRecording(context: android.content.Context, updateUiOnStart: (filePath: String) -> Unit) {
@@ -165,14 +165,31 @@ fun TranscriptionScreen(
         }
     )
 
-    // Launcher for storage permission (remains the same)
+    // Launcher for selecting an audio file ---
+    val selectAudioFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+        onResult = { uri: Uri? ->
+            if (uri != null) {
+                // File selected
+                Toast.makeText(context, "File selected: $uri", Toast.LENGTH_LONG).show()
+                transcriptionText = "File selected: ${uri.path}" // Displaying the path for now
+                currentAudioFilePath = uri.toString() // Store URI as string for now
+                // TODO: Process this URI: get the actual file path or copy file to app storage for upload
+            } else {
+                // No file selected or an error occurred
+                Toast.makeText(context, "No file selected", Toast.LENGTH_SHORT).show()
+            }
+        }
+    )
+
+    // Launcher for storage permission
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { isGranted: Boolean ->
             if (isGranted) {
-                Toast.makeText(context, "Storage permission granted", Toast.LENGTH_SHORT).show()
-                transcriptionText = "Storage permission granted. Ready to select file!"
-                // TODO: Implement audio file selection logic
+                Toast.makeText(context, "Storage permission granted. Opening file picker...", Toast.LENGTH_SHORT).show()
+                transcriptionText = "Storage permission granted. Opening file picker..."
+                selectAudioFileLauncher.launch("audio/*") // --- LAUNCH PICKER HERE AFTER GRANT ---
             } else {
                 Toast.makeText(context, "Storage permission denied", Toast.LENGTH_SHORT).show()
                 transcriptionText = "Storage permission denied. Cannot select file."
@@ -204,7 +221,6 @@ fun TranscriptionScreen(
                 Button(
                     onClick = {
                         if (isRecording) {
-                            // --- Stop recording ---
                             stopRecording(context) { filePath ->
                                 transcriptionText = if (filePath != null) {
                                     "Recording stopped. File saved: ${File(filePath).name}"
@@ -214,7 +230,6 @@ fun TranscriptionScreen(
                                 isRecording = false
                             }
                         } else {
-                            // --- Start recording ---
                             when (ContextCompat.checkSelfPermission(
                                 context,
                                 Manifest.permission.RECORD_AUDIO
@@ -234,10 +249,10 @@ fun TranscriptionScreen(
                     },
                     modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
-                    Text(if (isRecording) "Stop Recording" else "Record Audio") // --- NEW: Dynamic button text ---
+                    Text(if (isRecording) "Stop Recording" else "Record Audio")
                 }
                 Button(
-                    onClick = { // Storage permission logic from previous step
+                    onClick = {
                         val storagePermission =
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 Manifest.permission.READ_MEDIA_AUDIO
@@ -246,11 +261,12 @@ fun TranscriptionScreen(
                             }
                         when (ContextCompat.checkSelfPermission(context, storagePermission)) {
                             PackageManager.PERMISSION_GRANTED -> {
-                                Toast.makeText(context, "Storage permission already granted", Toast.LENGTH_SHORT).show()
-                                transcriptionText = "Storage permission already granted. Ready to select file!"
-                                // TODO: Implement audio file selection logic
+                                // Permission is already granted, launch the file picker
+                                selectAudioFileLauncher.launch("audio/*") // --- MODIFIED: Launch file picker ---
                             }
                             else -> {
+                                // Permission is not granted, request it.
+                                // The onResult of storagePermissionLauncher will then launch the file picker if granted.
                                 storagePermissionLauncher.launch(storagePermission)
                             }
                         }
