@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun TranscriptionScreen(modifier: Modifier = Modifier) {
     // State to hold the transcription text
-    var transcriptionText by remember { mutableStateOf("Your transcription will appear here...") }
+    val transcriptionText by remember { mutableStateOf("Your transcription will appear here...") }
 
     Surface(
         modifier = modifier.fillMaxSize(),
