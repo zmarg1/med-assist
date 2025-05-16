@@ -1,9 +1,10 @@
 package com.example.medassist
 
-import android.Manifest // Required for Manifest.permission
+import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build // Required for Build.VERSION.SDK_INT
 import android.os.Bundle
-import android.widget.Toast // For simple feedback
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -16,10 +17,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext // Required for Context
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat // Required for ContextCompat
+import androidx.core.content.ContextCompat
 import com.example.medassist.ui.theme.MedAssistTheme
 
 class MainActivity : ComponentActivity() {
@@ -51,6 +52,21 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
                 // Permission Denied
                 Toast.makeText(context, "Record Audio permission denied", Toast.LENGTH_SHORT).show()
                 transcriptionText = "Record Audio permission denied. Cannot record."
+            }
+        }
+    )
+
+    // Launcher for storage permission (READ_MEDIA_AUDIO or READ_EXTERNAL_STORAGE)
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { isGranted: Boolean ->
+            if (isGranted) {
+                Toast.makeText(context, "Storage permission granted", Toast.LENGTH_SHORT).show()
+                transcriptionText = "Storage permission granted. Ready to select file!"
+                // TODO: Implement audio file selection logic
+            } else {
+                Toast.makeText(context, "Storage permission denied", Toast.LENGTH_SHORT).show()
+                transcriptionText = "Storage permission denied. Cannot select file."
             }
         }
     )
@@ -99,7 +115,26 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
                     Text("Record Audio")
                 }
                 Button(
-                    onClick = { /* TODO: Implement select audio file action AND its permission request */ },
+                    onClick = {
+                        // Determine which storage permission to request based on Android version
+                        val storagePermission =
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // TIRAMISU is API 33
+                                Manifest.permission.READ_MEDIA_AUDIO
+                            } else {
+                                Manifest.permission.READ_EXTERNAL_STORAGE
+                            }
+
+                        when (ContextCompat.checkSelfPermission(context, storagePermission)) {
+                            PackageManager.PERMISSION_GRANTED -> {
+                                Toast.makeText(context, "Storage permission already granted", Toast.LENGTH_SHORT).show()
+                                transcriptionText = "Storage permission already granted. Ready to select file!"
+                                // TODO: Implement audio file selection logic
+                            }
+                            else -> {
+                                storagePermissionLauncher.launch(storagePermission)
+                            }
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
                     Text("Select Audio File")
