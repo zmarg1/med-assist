@@ -1,8 +1,13 @@
 package com.example.medassist
 
+import android.Manifest // Required for Manifest.permission
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Toast // For simple feedback
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -11,8 +16,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext // Required for Context
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat // Required for ContextCompat
 import com.example.medassist.ui.theme.MedAssistTheme
 
 class MainActivity : ComponentActivity() {
@@ -28,8 +35,25 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun TranscriptionScreen(modifier: Modifier = Modifier) {
-    // State to hold the transcription text
-    val transcriptionText by remember { mutableStateOf("Your transcription will appear here...") }
+    val context = LocalContext.current // Get the current context
+    var transcriptionText by remember { mutableStateOf("Your transcription will appear here...") }
+
+    // Launcher for RECORD_AUDIO permission
+    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { isGranted: Boolean ->
+            if (isGranted) {
+                // Permission Granted: TODO: Implement audio recording logic
+                Toast.makeText(context, "Record Audio permission granted", Toast.LENGTH_SHORT).show()
+                // For now, let's update the text to show permission was granted
+                transcriptionText = "Record Audio permission granted. Ready to record!"
+            } else {
+                // Permission Denied
+                Toast.makeText(context, "Record Audio permission denied", Toast.LENGTH_SHORT).show()
+                transcriptionText = "Record Audio permission denied. Cannot record."
+            }
+        }
+    )
 
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -40,41 +64,54 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
                 .fillMaxSize()
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween // Pushes elements apart
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Title Text
             Text(
                 text = "Medical Transcription App",
                 style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.padding(top = 16.dp, bottom = 32.dp) // Added more padding
+                modifier = Modifier.padding(top = 16.dp, bottom = 32.dp)
             )
 
-            // Container for Buttons
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp) // Space between buttons
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
-                    onClick = { /* TODO: Implement record audio action */ },
-                    modifier = Modifier.fillMaxWidth(0.8f) // Make buttons wider
+                    onClick = {
+                        // Check if permission is already granted
+                        when (ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO
+                        )) {
+                            PackageManager.PERMISSION_GRANTED -> {
+                                // Permission is already granted: TODO: Implement audio recording logic
+                                Toast.makeText(context, "Record Audio permission already granted", Toast.LENGTH_SHORT).show()
+                                transcriptionText = "Record Audio permission already granted. Ready to record!"
+                            }
+                            else -> {
+                                // Permission is not granted, launch the permission request
+                                recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
                     Text("Record Audio")
                 }
                 Button(
-                    onClick = { /* TODO: Implement select audio file action */ },
-                    modifier = Modifier.fillMaxWidth(0.8f) // Make buttons wider
+                    onClick = { /* TODO: Implement select audio file action AND its permission request */ },
+                    modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
                     Text("Select Audio File")
                 }
             }
 
-            // Text area for transcription result
             Text(
                 text = transcriptionText,
                 modifier = Modifier
-                    .weight(1f) // Allows this to take up remaining vertical space
+                    .weight(1f)
                     .fillMaxWidth()
-                    .padding(top = 32.dp, bottom = 16.dp), // Added more padding
+                    .padding(top = 32.dp, bottom = 16.dp),
                 style = MaterialTheme.typography.bodyLarge
             )
         }
@@ -84,7 +121,7 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
 @Preview(showBackground = true)
 @Composable
 fun TranscriptionScreenPreview() {
-    MedAssistTheme { // Or your actual theme name
+    MedAssistTheme {
         TranscriptionScreen()
     }
 }
