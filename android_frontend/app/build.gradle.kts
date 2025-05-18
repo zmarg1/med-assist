@@ -49,6 +49,13 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+
+    // Retrofit & Networking
+    implementation(libs.retrofit)
+    implementation(libs.converter.gson) // for JSON parsing with Gson
+    implementation(libs.okhttp) // Retrofit uses OkHttp
+    implementation(libs.logging.interceptor) // Optional: For logging network requests/responses
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
