@@ -31,11 +31,53 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
     // --- Member variable for MediaRecorder ---
     private var mediaRecorder: MediaRecorder? = null
     private var audioFile: File? = null
+
+    internal fun copyUriToCache(context: android.content.Context, uri: Uri, fileNamePrefix: String = "selected_audio_"): File? {
+        return try {
+            val inputStream = context.contentResolver.openInputStream(uri)
+            if (inputStream == null) {
+                Log.e("FileSelection", "Failed to open input stream for URI: $uri")
+                return null
+            }
+
+            // Create a temporary file in the cache directory
+            val extension = getFileExtensionFromUri(context, uri) ?: "tmp"
+            val tempFile = File.createTempFile(fileNamePrefix, ".$extension", context.cacheDir)
+
+            val outputStream = FileOutputStream(tempFile)
+            inputStream.use { input ->
+                outputStream.use { output ->
+                    input.copyTo(output)
+                }
+            }
+            Log.d("FileSelection", "File copied to cache: ${tempFile.absolutePath}")
+            tempFile
+        } catch (e: IOException) {
+            Log.e("FileSelection", "Error copying URI to cache: ${e.message}", e)
+            Toast.makeText(context, "Error processing selected file.", Toast.LENGTH_LONG).show()
+            null
+        }
+    }
+
+    // Helper to try and get a file extension from a URI (optional, but good for naming)
+    private fun getFileExtensionFromUri(context: android.content.Context, uri: Uri): String? {
+        return try {
+            // A more robust way might involve MediaStore if it's a media URI,
+            // or MimeTypeMap if it's a file URI with a clear extension in its path.
+            // For GetContent, the URI might not directly expose a simple file name.
+            val mimeType = context.contentResolver.getType(uri)
+            android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
+        } catch (e: Exception) {
+            Log.w("FileSelection", "Could not determine file extension from URI: $uri", e)
+            null
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -140,11 +182,20 @@ fun TranscriptionScreen(
     modifier: Modifier = Modifier,
     startRecording: (context: android.content.Context, updateUiOnStart: (filePath: String) -> Unit) -> Unit,
     stopRecording: (context: android.content.Context, updateUiOnStop: (filePath: String?) -> Unit) -> Unit
+    // --- Add a reference to the MainActivity function ---
+    // (Note: This is a simplified way. For cleaner architecture, you might use a ViewModel
+    // or pass lambdas that encapsulate MainActivity's methods. For now, this illustrates the call.)
+    // However, since copyUriToCache is in MainActivity, we can't call it directly like this from a Composable
+    // that doesn't have a MainActivity instance.
+    // Let's adjust how we trigger this. We'll update transcriptionText and let MainActivity handle the copy
+    // if we were to add more complex state later. For now, let's just show how to call it if MainActivity instance was available.
+    // A better approach is to pass a lambda from MainActivity.
 ) {
+    val activity = LocalContext.current as MainActivity // Get MainActivity instance (use with caution, see note)
     val context = LocalContext.current
     var transcriptionText by remember { mutableStateOf("Your transcription will appear here...") }
-    var isRecording by remember { mutableStateOf(false) } // --- NEW: State for recording status ---
-    var currentAudioFilePath by remember { mutableStateOf<String?>(null) } // To store current file path
+    var isRecording by remember { mutableStateOf(false) }
+    var currentAudioFilePath by remember { mutableStateOf<String?>(null) } // This will now store the path to the copied cache file
 
     // Launcher for RECORD_AUDIO permission
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
@@ -170,14 +221,22 @@ fun TranscriptionScreen(
         contract = ActivityResultContracts.GetContent(),
         onResult = { uri: Uri? ->
             if (uri != null) {
-                // File selected
-                Toast.makeText(context, "File selected: $uri", Toast.LENGTH_LONG).show()
-                transcriptionText = "File selected: ${uri.path}" // Displaying the path for now
-                currentAudioFilePath = uri.toString() // Store URI as string for now
-                // TODO: Process this URI: get the actual file path or copy file to app storage for upload
+                Toast.makeText(context, "File selected: $uri. Processing...", Toast.LENGTH_SHORT).show()
+                transcriptionText = "Processing selected file..."
+                // --- MODIFIED: Call the copy function ---
+                val copiedFile = activity.copyUriToCache(context, uri) // Calling MainActivity's method
+                if (copiedFile != null) {
+                    transcriptionText = "File ready: ${copiedFile.name}"
+                    currentAudioFilePath = copiedFile.absolutePath // Store path of the copied file
+                    // TODO: Now you have 'copiedFile' (a File object) ready for use (e.g., upload)
+                    Log.d("FileSelection", "Processed file available at: ${copiedFile.absolutePath}")
+                } else {
+                    transcriptionText = "Failed to process selected file."
+                    currentAudioFilePath = null
+                }
             } else {
-                // No file selected or an error occurred
                 Toast.makeText(context, "No file selected", Toast.LENGTH_SHORT).show()
+                currentAudioFilePath = null
             }
         }
     )
@@ -292,11 +351,16 @@ fun TranscriptionScreen(
     }
 }
 
+// Preview function needs to be adjusted if TranscriptionScreen parameters change,
+// but since we are calling MainActivity methods via context cast, it might work as is for preview,
+// though the copy function won't actually execute meaningfully in preview.
 @Preview(showBackground = true)
 @Composable
 fun TranscriptionScreenPreview() {
     MedAssistTheme {
-        // Provide dummy functions for the preview
+        // For preview, the cast to MainActivity won't work well.
+        // This highlights that a ViewModel or passing lambdas is a better pattern for real apps.
+        // For now, the preview might not fully reflect the file processing part.
         TranscriptionScreen(startRecording = { _, _ -> }, stopRecording = { _, _ -> })
     }
 }
