@@ -24,9 +24,9 @@ object RetrofitClient {
     // Create an OkHttpClient and add the logging interceptor
     private val okHttpClient = OkHttpClient.Builder()
         .addInterceptor(loggingInterceptor)
-        .connectTimeout(30, TimeUnit.SECONDS) // Optional: Set connection timeout
-        .readTimeout(30, TimeUnit.SECONDS)    // Optional: Set read timeout
-        .writeTimeout(30, TimeUnit.SECONDS)   // Optional: Set write timeout
+        .connectTimeout(60, TimeUnit.SECONDS)    // Increased connect timeout
+        .readTimeout(180, TimeUnit.SECONDS)     // SIGNIFICANTLY INCREASED read timeout (3 minutes)
+        .writeTimeout(60, TimeUnit.SECONDS)   // Increased write timeout
         .build()
 
     // Create the Retrofit instance (lazily to initialize only when first accessed)
