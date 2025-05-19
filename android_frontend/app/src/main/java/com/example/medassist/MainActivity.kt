@@ -33,6 +33,13 @@ import java.util.Date
 import java.util.Locale
 import java.io.FileOutputStream
 
+import androidx.lifecycle.lifecycleScope // For launching coroutines from Activity
+import kotlinx.coroutines.launch // For launching coroutines
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+
 class MainActivity : ComponentActivity() {
     // --- Member variable for MediaRecorder ---
     private var mediaRecorder: MediaRecorder? = null
@@ -79,13 +86,72 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun uploadAudioFileToServer(
+        filePath: String,
+        onUploadStart: () -> Unit,
+        onUploadSuccess: (response: TranscriptionResponse) -> Unit,
+        onUploadFailure: (errorMessage: String) -> Unit
+    ) {
+        lifecycleScope.launch { // Launch a coroutine in the activity's lifecycle scope
+            onUploadStart() // Notify UI that upload is starting
+
+            try {
+                val file = File(filePath)
+                if (!file.exists()) {
+                    onUploadFailure("File not found: $filePath")
+                    return@launch
+                }
+
+                // Create RequestBody for the file
+                // Adjust MIME type if your recorded files are different (e.g., "audio/3gp" for .3gp)
+                val requestFile = file.asRequestBody("audio/mp4".toMediaTypeOrNull())
+
+                // Create MultipartBody.Part for the file
+                // The name "audioFile" MUST MATCH the @Part name in your ApiService interface
+                val body = MultipartBody.Part.createFormData("audioFile", file.name, requestFile)
+
+                // Create RequestBody for other data (e.g., description)
+                // The name "description" MUST MATCH the @Part name in your ApiService interface
+                val descriptionString = "This is a medical appointment audio."
+                val description = descriptionString.toRequestBody("text/plain".toMediaTypeOrNull())
+
+                // Make the API call
+                Log.d("FileUpload", "Attempting to upload: ${file.name}")
+                val response = RetrofitClient.apiService.uploadAudioFile(body, description)
+
+                if (response.isSuccessful) {
+                    response.body()?.let {
+                        Log.d("FileUpload", "Upload successful: ${it.transcript}")
+                        onUploadSuccess(it)
+                    } ?: run {
+                        Log.e("FileUpload", "Upload successful but response body is null")
+                        onUploadFailure("Upload successful but response body is null")
+                    }
+                } else {
+                    val errorBody = response.errorBody()?.string() ?: "Unknown error"
+                    Log.e("FileUpload", "Upload failed: ${response.code()} - $errorBody")
+                    onUploadFailure("Upload failed: ${response.code()} - $errorBody")
+                }
+
+            } catch (e: Exception) {
+                Log.e("FileUpload", "Upload exception: ${e.message}", e)
+                onUploadFailure("Upload exception: ${e.localizedMessage ?: "Unknown network error"}")
+            }
+        }
+    }
+
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MedAssistTheme {
                 TranscriptionScreen(
                     startRecording = ::startRecording,
-                    stopRecording = ::stopRecording
+                    stopRecording = ::stopRecording,
+                    // --- PASS THE NEW LAMBDA ---
+                    onUploadFile = { filePath, onStart, onSuccess, onFailure ->
+                        uploadAudioFileToServer(filePath, onStart, onSuccess, onFailure)
+                    }
                 )
             }
         }
@@ -181,7 +247,13 @@ class MainActivity : ComponentActivity() {
 fun TranscriptionScreen(
     modifier: Modifier = Modifier,
     startRecording: (context: android.content.Context, updateUiOnStart: (filePath: String) -> Unit) -> Unit,
-    stopRecording: (context: android.content.Context, updateUiOnStop: (filePath: String?) -> Unit) -> Unit
+    stopRecording: (context: android.content.Context, updateUiOnStop: (filePath: String?) -> Unit) -> Unit,
+    onUploadFile: (
+        filePath: String,
+        onStart: () -> Unit,
+        onSuccess: (TranscriptionResponse) -> Unit,
+        onFailure: (String) -> Unit
+    ) -> Unit
     // --- Add a reference to the MainActivity function ---
     // (Note: This is a simplified way. For cleaner architecture, you might use a ViewModel
     // or pass lambdas that encapsulate MainActivity's methods. For now, this illustrates the call.)
@@ -196,6 +268,7 @@ fun TranscriptionScreen(
     var transcriptionText by remember { mutableStateOf("Your transcription will appear here...") }
     var isRecording by remember { mutableStateOf(false) }
     var currentAudioFilePath by remember { mutableStateOf<String?>(null) } // This will now store the path to the copied cache file
+    var isUploading by remember { mutableStateOf(false) }
 
     // Launcher for RECORD_AUDIO permission
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
@@ -334,6 +407,35 @@ fun TranscriptionScreen(
                 ) {
                     Text("Select Audio File")
                 }
+                // Transcribe Button
+                Button(
+                    onClick = {
+                        currentAudioFilePath?.let { filePath ->
+                            if (!isUploading) { // Prevent multiple clicks while uploading
+                                onUploadFile(
+                                    filePath,
+                                    { // onStart
+                                        isUploading = true
+                                        transcriptionText = "Uploading and transcribing..."
+                                    },
+                                    { response -> // onSuccess
+                                        isUploading = false
+                                        transcriptionText = "Transcript: ${response.transcript ?: "No transcript received."}"
+                                        // You might want to clear currentAudioFilePath or handle it differently after successful upload
+                                    },
+                                    { errorMessage -> // onFailure
+                                        isUploading = false
+                                        transcriptionText = "Error: $errorMessage"
+                                    }
+                                )
+                            }
+                        }
+                    },
+                    enabled = currentAudioFilePath != null && !isRecording && !isUploading, // Enable only if a file is ready and not recording/uploading
+                    modifier = Modifier.fillMaxWidth(0.8f)
+                ) {
+                    Text(if (isUploading) "Transcribing..." else "Transcribe Current File")
+                }
             }
 
             Text(
@@ -358,9 +460,10 @@ fun TranscriptionScreen(
 @Composable
 fun TranscriptionScreenPreview() {
     MedAssistTheme {
-        // For preview, the cast to MainActivity won't work well.
-        // This highlights that a ViewModel or passing lambdas is a better pattern for real apps.
-        // For now, the preview might not fully reflect the file processing part.
-        TranscriptionScreen(startRecording = { _, _ -> }, stopRecording = { _, _ -> })
+        TranscriptionScreen(
+            startRecording = { _, _ -> },
+            stopRecording = { _, _ -> },
+            onUploadFile = { _, _, _, _ -> } // Provide dummy for preview
+        )
     }
 }
