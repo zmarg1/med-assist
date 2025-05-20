@@ -14,6 +14,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState // For scrolling
+import androidx.compose.foundation.verticalScroll // For scrolling
+import androidx.compose.material3.CircularProgressIndicator // The progress indicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -254,20 +257,12 @@ fun TranscriptionScreen(
         onSuccess: (TranscriptionResponse) -> Unit,
         onFailure: (String) -> Unit
     ) -> Unit
-    // --- Add a reference to the MainActivity function ---
-    // (Note: This is a simplified way. For cleaner architecture, you might use a ViewModel
-    // or pass lambdas that encapsulate MainActivity's methods. For now, this illustrates the call.)
-    // However, since copyUriToCache is in MainActivity, we can't call it directly like this from a Composable
-    // that doesn't have a MainActivity instance.
-    // Let's adjust how we trigger this. We'll update transcriptionText and let MainActivity handle the copy
-    // if we were to add more complex state later. For now, let's just show how to call it if MainActivity instance was available.
-    // A better approach is to pass a lambda from MainActivity.
 ) {
-    val activity = LocalContext.current as MainActivity // Get MainActivity instance (use with caution, see note)
+    val activity = LocalContext.current as MainActivity
     val context = LocalContext.current
     var transcriptionText by remember { mutableStateOf("Your transcription will appear here...") }
     var isRecording by remember { mutableStateOf(false) }
-    var currentAudioFilePath by remember { mutableStateOf<String?>(null) } // This will now store the path to the copied cache file
+    var currentAudioFilePath by remember { mutableStateOf<String?>(null) }
     var isUploading by remember { mutableStateOf(false) }
 
     // Launcher for RECORD_AUDIO permission
@@ -350,7 +345,7 @@ fun TranscriptionScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Button(
+                Button( // Record Audio Button
                     onClick = {
                         if (isRecording) {
                             stopRecording(context) { filePath ->
@@ -360,16 +355,16 @@ fun TranscriptionScreen(
                                     "Recording failed or was stopped with an issue."
                                 }
                                 isRecording = false
+                                // currentAudioFilePath is already set by startRecording's callback if successful
                             }
                         } else {
                             when (ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.RECORD_AUDIO
+                                context, Manifest.permission.RECORD_AUDIO
                             )) {
                                 PackageManager.PERMISSION_GRANTED -> {
                                     startRecording(context) { filePath ->
                                         transcriptionText = "Recording started... saving to ${File(filePath).name}"
-                                        currentAudioFilePath = filePath
+                                        currentAudioFilePath = filePath // Set path when recording starts
                                         isRecording = true
                                     }
                                 }
@@ -379,49 +374,45 @@ fun TranscriptionScreen(
                             }
                         }
                     },
+                    enabled = !isUploading, // --- MODIFIED: Disable while uploading ---
                     modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
                     Text(if (isRecording) "Stop Recording" else "Record Audio")
                 }
-                Button(
+                Button( // Select Audio File Button
                     onClick = {
-                        val storagePermission =
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                Manifest.permission.READ_MEDIA_AUDIO
-                            } else {
-                                Manifest.permission.READ_EXTERNAL_STORAGE
-                            }
+                        val storagePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            Manifest.permission.READ_MEDIA_AUDIO
+                        } else {
+                            Manifest.permission.READ_EXTERNAL_STORAGE
+                        }
                         when (ContextCompat.checkSelfPermission(context, storagePermission)) {
                             PackageManager.PERMISSION_GRANTED -> {
-                                // Permission is already granted, launch the file picker
-                                selectAudioFileLauncher.launch("audio/*") // --- MODIFIED: Launch file picker ---
+                                selectAudioFileLauncher.launch("audio/*")
                             }
                             else -> {
-                                // Permission is not granted, request it.
-                                // The onResult of storagePermissionLauncher will then launch the file picker if granted.
                                 storagePermissionLauncher.launch(storagePermission)
                             }
                         }
                     },
+                    enabled = !isRecording && !isUploading, // --- MODIFIED: Disable while recording or uploading ---
                     modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
                     Text("Select Audio File")
                 }
-                // Transcribe Button
-                Button(
+                Button( // Transcribe Current File Button
                     onClick = {
                         currentAudioFilePath?.let { filePath ->
-                            if (!isUploading) { // Prevent multiple clicks while uploading
+                            if (!isUploading) { // Should already be covered by enabled state, but good for safety
                                 onUploadFile(
                                     filePath,
                                     { // onStart
                                         isUploading = true
-                                        transcriptionText = "Uploading and transcribing..."
+                                        // transcriptionText = "Uploading and transcribing..." // This will be handled by the new UI block
                                     },
                                     { response -> // onSuccess
                                         isUploading = false
-                                        transcriptionText = "Transcript: ${response.transcript ?: "No transcript received."}"
-                                        // You might want to clear currentAudioFilePath or handle it differently after successful upload
+                                        transcriptionText = response.transcript ?: "No transcript received from server."
                                     },
                                     { errorMessage -> // onFailure
                                         isUploading = false
@@ -431,31 +422,61 @@ fun TranscriptionScreen(
                             }
                         }
                     },
-                    enabled = currentAudioFilePath != null && !isRecording && !isUploading, // Enable only if a file is ready and not recording/uploading
+                    enabled = currentAudioFilePath != null && !isRecording && !isUploading,
                     modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
-                    Text(if (isUploading) "Transcribing..." else "Transcribe Current File")
+                    // Text on this button can remain simple as the progress indicator will be separate
+                    Text("Transcribe Current File")
                 }
             }
 
-            Text(
-                text = transcriptionText,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(top = 32.dp, bottom = 16.dp),
-                style = MaterialTheme.typography.bodyLarge
-            )
-            currentAudioFilePath?.let {
-                Text("Last audio file: $it", style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.height(16.dp)) // Space before result/progress area
+
+            // Area for Progress Indicator OR Transcription Text ---
+            if (isUploading) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f) // Allow it to take space
+                        .padding(vertical = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center // Center the progress indicator
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Transcribing, please wait...")
+                }
+            } else {
+                // This Text composable will now display the final transcript or any error messages
+                Text(
+                    text = transcriptionText,
+                    modifier = Modifier
+                        .weight(1f) // Takes available space
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 16.dp) // Adjusted padding
+                        .verticalScroll(rememberScrollState()), // Make it scrollable
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+            // --- END MODIFIED AREA ---
+
+            // Display for the current audio file path (can remain as is, or be hidden during upload)
+            if (!isUploading && currentAudioFilePath != null) { // Hide when uploading
+                val fileName = File(currentAudioFilePath!!).name // currentAudioFilePath is not null here
+                Text(
+                    "File ready: $fileName",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
         }
     }
 }
 
-// Preview function needs to be adjusted if TranscriptionScreen parameters change,
-// but since we are calling MainActivity methods via context cast, it might work as is for preview,
-// though the copy function won't actually execute meaningfully in preview.
+// Remember to have dummy implementations for the new parameters in your Preview if needed,
+// though the current preview structure for TranscriptionScreen might still work if it doesn't
+// rely on actually calling onUploadFile.
+// The preview for startRecording/stopRecording should be fine.
 @Preview(showBackground = true)
 @Composable
 fun TranscriptionScreenPreview() {
@@ -463,7 +484,7 @@ fun TranscriptionScreenPreview() {
         TranscriptionScreen(
             startRecording = { _, _ -> },
             stopRecording = { _, _ -> },
-            onUploadFile = { _, _, _, _ -> } // Provide dummy for preview
+            onUploadFile = { _, _, _, _ -> } // Dummy for preview
         )
     }
 }
