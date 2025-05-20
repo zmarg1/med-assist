@@ -14,6 +14,10 @@ import logging
 # --- AssemblyAI Import ---
 import assemblyai
 
+# --- OpenAI Import ---
+import openai # New import
+from openai import OpenAI # New import for newer SDK style
+
 # --- Initialize Flask App ---
 app = Flask(__name__)
 
@@ -47,6 +51,7 @@ else:
 load_dotenv()
 #HF_TOKEN = os.getenv("HF_TOKEN")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # --- Configure AssemblyAI ---
 if not ASSEMBLYAI_API_KEY:
@@ -56,11 +61,23 @@ else:
     assemblyai.settings.api_key = ASSEMBLYAI_API_KEY
     app.logger.info("AssemblyAI API key configured.")
 
-# --- Old Global Model Initializations (Commented Out or Removed) ---
+# --- Configure OpenAI Client ---
+openai_client = None
+if not OPENAI_API_KEY:
+    app.logger.warning("OPENAI_API_KEY not found in .env file. LLM cleaning will be skipped or will use fallback.")
+else:
+    try:
+        openai_client = OpenAI(api_key=OPENAI_API_KEY) # Newer SDK style
+        # openai.api_key = OPENAI_API_KEY # Older SDK style, OpenAI() is preferred
+        app.logger.info("OpenAI client configured successfully.")
+    except Exception as e:
+        app.logger.error(f"Failed to configure OpenAI client: {e}")
+# --- End OpenAI Client Config ---
+
+# --- Old Global Model Initializations ---
 #DIARIZATION_PIPELINE = None
 #ASR_PIPELINE = None
-app.logger.info("Local PyAnnote and Whisper pipelines are disabled; using AssemblyAI.")
-
+#app.logger.info("Local PyAnnote and Whisper pipelines are disabled; using AssemblyAI.")
 
 """try:
     app.logger.info("Loading Diarization model...")
@@ -91,7 +108,65 @@ def apply_light_rules(text_segments): # Assuming this function exists as you def
             # This logic might need speaker context from diarization to be truly effective
             seg["speaker_override"] = True # Example, adapt as needed
         cleaned.append(seg)
+    app.logger.info("Applying light rules (if any)...")
     return cleaned
+
+def clean_transcript_with_openai_llm(diarized_transcript_text: str): # Renamed and modified
+    app.logger.info("Attempting to clean transcript with OpenAI LLM (gpt-3.5-turbo)...")
+    if not openai_client:
+        app.logger.warning("OpenAI client not configured. Skipping LLM cleaning.")
+        return f"LLM_SKIPPED: OpenAI client not configured. Original transcript:\n{diarized_transcript_text}"
+
+    system_prompt = (
+        "You are an expert in refining diarized medical appointment transcripts. "
+        "Your task is to review the provided transcript, which includes timestamps and speaker labels (e.g., A, B). "
+        "Make only essential corrections such as fixing obvious misspellings of common medical terms or very obvious grammatical errors that hinder readability. "
+        "Do NOT change the meaning, add new information, or remove information. "
+        "Do NOT change speaker labels unless there's an extremely obvious error indicated by the dialogue flow (be very conservative). "
+        "Do NOT add personal names (like 'Dr. Smith' or patient names like 'Cat') unless they are explicitly and clearly spoken in the transcript. "
+        "Ensure the original timestamp and speaker label format ([HH:MM:SS] SPEAKER_LABEL: Text) is preserved for each utterance. "
+        "If an utterance appears to be split across lines from the same speaker at the same timestamp, you can merge them. "
+        "If an utterance contains speech from two speakers that should be separate turns, try to split them into new lines with appropriate (or estimated if necessary) timestamps and speaker labels. "
+        "Focus on clarity and fidelity to the original speech."
+    )
+    
+    user_prompt = (
+        "Please clean the following diarized medical transcript according to the rules provided:\n\n"
+        f"{diarized_transcript_text}"
+    )
+
+    try:
+        app.logger.info("Sending transcript to OpenAI API for cleaning...")
+        chat_completion = openai_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            model="gpt-3.5-turbo", # Or "gpt-4o-mini" for a balance, or "gpt-4o" for best quality (check pricing)
+            temperature=0.2, # Lower temperature for more deterministic, less creative output
+        )
+        
+        cleaned_text = chat_completion.choices[0].message.content
+        app.logger.info("OpenAI LLM cleaning successful.")
+        # Ensure the output is a string, even if it's empty
+        return cleaned_text if cleaned_text is not None else ""
+
+    except openai.APIConnectionError as e:
+        app.logger.error(f"OpenAI API connection error: {e}")
+        return f"LLM_ERROR: OpenAI API connection error. Original transcript:\n{diarized_transcript_text}"
+    except openai.RateLimitError as e:
+        app.logger.error(f"OpenAI API rate limit exceeded: {e}")
+        return f"LLM_ERROR: OpenAI API rate limit exceeded. Original transcript:\n{diarized_transcript_text}"
+    except openai.AuthenticationError as e:
+        app.logger.error(f"OpenAI API authentication error (check your API key): {e}")
+        return f"LLM_ERROR: OpenAI API authentication error. Original transcript:\n{diarized_transcript_text}"
+    except openai.APIError as e: # Catch other OpenAI API errors
+        app.logger.error(f"OpenAI API error: {e}")
+        return f"LLM_ERROR: OpenAI API error ({e.status_code}). Original transcript:\n{diarized_transcript_text}"
+    except Exception as e:
+        app.logger.error(f"An unexpected error occurred during OpenAI LLM cleaning: {e}", exc_info=True)
+        return f"LLM_ERROR: Unexpected error during OpenAI cleaning. Original transcript:\n{diarized_transcript_text}"
+
 
 def clean_with_local_llm(transcript_text_input): # Modified to take simple text
     app.logger.info("Attempting to clean transcript with local LLM via Ollama...")
@@ -135,13 +210,16 @@ def clean_with_local_llm(transcript_text_input): # Modified to take simple text
 def perform_transcription_with_assemblyai(audio_path):
     app.logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
     if not ASSEMBLYAI_API_KEY:
+        # Return an error structure consistent with what the app expects
+        app.logger.error("AssemblyAI API key not configured during transcription attempt.")
         return "ERROR: AssemblyAI API key not configured."
+
 
     try:
         transcriber = assemblyai.Transcriber()
         config = assemblyai.TranscriptionConfig(
             speaker_labels=True,
-            speech_model=assemblyai.SpeechModel.best  # Use AssemblyAI's best available model
+            speech_model=assemblyai.SpeechModel.best
         )
 
         app.logger.info(f"Uploading {audio_path} to AssemblyAI and submitting for transcription...")
@@ -157,16 +235,14 @@ def perform_transcription_with_assemblyai(audio_path):
 
         if not transcript.utterances:
             app.logger.warning("AssemblyAI transcription complete but no utterances found.")
-            return transcript.text if transcript.text else "Transcription complete, but no text or utterances returned."
+            # Return the full text if available, otherwise a message
+            return transcript.text if transcript.text else "Transcription complete, but no utterances found by AssemblyAI."
 
         # Format the transcript with speaker labels and timestamps
         formatted_transcript_lines = []
         for utterance in transcript.utterances:
-            # AssemblyAI utterance timestamps are in milliseconds
             start_ms = utterance.start
-            # Convert ms to HH:MM:SS format using timedelta
             start_td = timedelta(milliseconds=start_ms)
-            # Format timedelta: remove microseconds part, ensure HH:MM:SS
             hours, remainder = divmod(start_td.seconds, 3600)
             minutes, seconds = divmod(remainder, 60)
             start_ts_str = f"{hours:02}:{minutes:02}:{seconds:02}"
@@ -175,29 +251,31 @@ def perform_transcription_with_assemblyai(audio_path):
                 f"[{start_ts_str}] {utterance.speaker if utterance.speaker else 'UNKNOWN'}: {utterance.text}"
             )
         
-        final_transcript_string = "\n".join(formatted_transcript_lines)
-        app.logger.info(f"AssemblyAI transcription successful. Formatted (length: {len(final_transcript_string)} chars).")
-        if len(final_transcript_string) < 2000:
-             app.logger.info(f"Formatted transcript content: \n{final_transcript_string}")
+        assemblyai_transcript_string = "\n".join(formatted_transcript_lines)
+        app.logger.info(f"AssemblyAI transcription successful and formatted. (Length: {len(assemblyai_transcript_string)} chars).")
+        if len(assemblyai_transcript_string) < 2000:
+             app.logger.info(f"Formatted transcript content from AssemblyAI:\n{assemblyai_transcript_string}")
         else:
-            app.logger.info(f"Formatted transcript content (first 2000 chars): \n{final_transcript_string[:2000]}...")
+            app.logger.info(f"Formatted transcript content from AssemblyAI (first 2000 chars):\n{assemblyai_transcript_string[:2000]}...")
         
-        # --- Optional: Pass to local LLM for further cleanup ---
-        # app.logger.info("Passing AssemblyAI transcript to local LLM for cleanup...")
-        # final_transcript_string = clean_with_local_llm(final_transcript_string)
-        # app.logger.info("LLM cleanup attempt complete.")
-        # --- End Optional LLM ---
+        # --- LLM Cleanup Call is Now Removed/Commented Out ---
+        # app.logger.info("Passing AssemblyAI transcript to OpenAI LLM for cleanup...")
+        # final_cleaned_transcript = clean_transcript_with_openai_llm(assemblyai_transcript_string)
+        # app.logger.info("OpenAI LLM cleanup attempt complete.")
+        # return final_cleaned_transcript 
+        # --- END LLM Cleanup Call ---
 
-        return final_transcript_string
+        return assemblyai_transcript_string # Return AssemblyAI transcript directly
 
     except Exception as e:
         app.logger.error(f"Error during AssemblyAI transcription process: {e}", exc_info=True)
-        return f"ERROR: AssemblyAI transcription failed - {str(e)}"
-    # No need to manually clean up the WAV file sent to AssemblyAI, it handles the copy.
+        return f"ERROR: AssemblyAI transcription process failed - {str(e)}"
+    # The finally block for cleaning up processed_wav_path_for_assembly in upload_audio_file_route
+    # should still exist if that's where you put it.
 
 
 
-def perform_transcription(audio_path_original_upload):
+"""def perform_transcription(audio_path_original_upload):
     app.logger.info(f"Starting transcription for original uploaded file: {audio_path_original_upload}")
     if not ASR_PIPELINE:
         app.logger.error("ASR_PIPELINE (Whisper) not loaded. Cannot transcribe.")
@@ -375,6 +453,7 @@ def perform_transcription(audio_path_original_upload):
                 app.logger.info(f"Cleaned up temporary processed WAV file: {processed_wav_path}")
             except Exception as e_remove:
                 app.logger.error(f"Error removing temporary processed WAV file {processed_wav_path}: {e_remove}")
+"""
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -382,50 +461,48 @@ def allowed_file(filename):
 
 @app.route('/api/v1/upload_audio', methods=['POST'])
 def upload_audio_file_route():
+    # ... (file checking, ffmpeg conversion to processed_wav_path_for_assembly) ...
+    # This part remains the same as your current working version for saving and converting.
+    # Ensure 'processed_wav_path_for_assembly' is what you pass to the transcription function.
     if request.method == 'POST':
-        # ... (file checking logic remains the same as before) ...
-        if 'audioFile' not in request.files: # ...
+        if 'audioFile' not in request.files:
             return jsonify({"success": False, "error": "No file part in the request", "transcript": None}), 400
         file = request.files['audioFile']
-        if file.filename == '': # ...
+        if file.filename == '':
             return jsonify({"success": False, "error": "No selected file", "transcript": None}), 400
 
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
-            save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            processed_wav_path_for_assembly = None # Path for the standardized WAV
+            original_save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            processed_wav_path = None # Initialize
             try:
-                file.save(save_path) # Save the original uploaded file first
-                app.logger.info(f"File '{filename}' saved successfully to '{save_path}'")
+                file.save(original_save_path)
+                app.logger.info(f"File '{filename}' saved successfully to '{original_save_path}'")
 
-                # --- Convert to standardized WAV for AssemblyAI (Recommended) ---
-                base, ext = os.path.splitext(save_path)
-                processed_wav_path_for_assembly = base + "_processed.wav"
+                base, ext = os.path.splitext(original_save_path)
+                processed_wav_path = base + "_processed.wav"
                 ffmpeg_command = [
-                    "ffmpeg", "-i", save_path,
-                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", # Mono, 16kHz, PCM S16LE
-                    "-y", processed_wav_path_for_assembly
+                    "ffmpeg", "-i", original_save_path,
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    "-y", processed_wav_path
                 ]
-                app.logger.info(f"Converting '{save_path}' to standardized WAV for AssemblyAI: {' '.join(ffmpeg_command)}")
+                app.logger.info(f"Converting '{original_save_path}' to standardized WAV: {' '.join(ffmpeg_command)}")
                 conversion_result = subprocess.run(ffmpeg_command, check=True, capture_output=True)
-                app.logger.info(f"FFmpeg conversion for AssemblyAI successful. STDERR: {conversion_result.stderr.decode()}")
-                # --- End Conversion ---
-
-                # --- Perform Transcription using AssemblyAI ---
-                transcript_result = perform_transcription_with_assemblyai(processed_wav_path_for_assembly) # Use the converted WAV
+                app.logger.info(f"FFmpeg conversion successful. STDERR: {conversion_result.stderr.decode()}")
                 
-                # ... (response handling remains similar, checking for "ERROR:") ...
-                if "ERROR:" in transcript_result or "LLM_ERROR:" in transcript_result :
+                transcript_result = perform_transcription_with_assemblyai(processed_wav_path)
+                
+                if "ERROR:" in transcript_result or "LLM_ERROR:" in transcript_result or "LLM_SKIPPED:" in transcript_result:
                     return jsonify({
                         "success": False, 
-                        "message": "File processed, but transcription/cleanup failed.",
-                        "filename": filename, # Original filename
+                        "message": "File processed, but transcription/cleanup failed or was skipped.",
+                        "filename": filename,
                         "transcript": transcript_result 
                     }), 500
                 else:
                     return jsonify({
                         "success": True,
-                        "message": "File transcribed successfully via AssemblyAI.",
+                        "message": "File transcribed and cleaned successfully.",
                         "filename": filename,
                         "transcript": transcript_result
                     }), 200
@@ -433,19 +510,15 @@ def upload_audio_file_route():
                 app.logger.error(f"Error in upload route: {e}", exc_info=True)
                 return jsonify({"success": False, "error": f"Error processing file: {str(e)}", "transcript": None}), 500
             finally:
-                # Clean up intermediate files
-                if processed_wav_path_for_assembly and os.path.exists(processed_wav_path_for_assembly):
-                    try: os.remove(processed_wav_path_for_assembly)
+                if processed_wav_path and os.path.exists(processed_wav_path):
+                    try: os.remove(processed_wav_path)
                     except Exception as e_rem: app.logger.error(f"Error removing processed WAV: {e_rem}")
-                # Optionally delete the original upload from `save_path` too if not needed
-                # if os.path.exists(save_path):
-                #    try: os.remove(save_path)
+                # Optionally delete original_save_path if it's different from processed_wav_path and not needed
+                # if original_save_path != processed_wav_path and os.path.exists(original_save_path):
+                #    try: os.remove(original_save_path)
                 #    except Exception as e_rem: app.logger.error(f"Error removing original upload: {e_rem}")
-
-        else: # File not allowed
-            app.logger.error(f"File type not allowed: {file.filename}")
+        else:
             return jsonify({"success": False, "error": "File type not allowed", "transcript": None}), 400
-            
     return jsonify({"error": "Only POST method is allowed", "transcript": None}), 405
 
 def configure_symlinks():
@@ -470,10 +543,10 @@ def configure_symlinks():
     os.environ["SPEECHBRAIN_FETCHING_STRATEGY"] = "copy"
 
 if __name__ == '__main__':
-    # configure_symlinks() # Call if still deemed necessary
-    app.logger.info("Ensuring AssemblyAI API key is configured...")
+    app.logger.info("Checking API key configurations...")
     if not ASSEMBLYAI_API_KEY:
-        app.logger.critical("ASSEMBLYAI_API_KEY IS MISSING. The application will not be able to transcribe.")
-    app.logger.info("Ensuring Ollama is running and mistral model is available if LLM cleanup is to be used later...")
+        app.logger.critical("ASSEMBLYAI_API_KEY IS MISSING.")
+    if not OPENAI_API_KEY:
+        app.logger.warning("OPENAI_API_KEY IS MISSING. LLM cleaning will be skipped.")
     app.logger.info("Starting Flask server...")
     app.run(host='0.0.0.0', port=5000, debug=True)
