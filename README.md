@@ -1,4 +1,4 @@
-# Med Assist [WORK IN PROGRESS]
+# Health Buddy [WORK IN PROGRESS]
 Note: This is a work in progress and does not represent a finished product
 
 ## Overview
