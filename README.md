@@ -1,26 +1,29 @@
-# DocBud [WORK IN PROGRESS]
-Note: This is a work in progress and does not represent a finished product
+# DocBud
+*Note: This is an active development project and not yet production-ready.*
 
 ## Overview
 
-DocBud is a smart medical assistant tool designed to record, transcribe, and summarize medical appointments. The project consists of:
+DocBud is a intelligent mobile assistant designed to record, transcribe, and summarize medical appointments. 
+It aims to make healthcare conversations more accessible for users.
 
-* **An Android mobile application (DocBud):** Built with Kotlin and Jetpack Compose, allowing users to record new audio or select existing audio files for transcription.
-* **A Python backend service:** Intended to handle the audio processing, including transcription with AssemblyAI and post-processing with an LLM. 
+The system is split into two main components:
 
-Future iterations of the tool will allow users to interact with a chat assistant to answer questions about past appointments.
+- **Android Frontend:** A mobile app that allows users to:
+  - Record new audio from doctor visits.
+  - View transcriptions.
+  - Download or share transcripts as PDFs.
 
-## Current Features
+- **Python Backend:** A Flask-based API service that:
+  - Accepts audio file uploads.
+  - Uses **AssemblyAI** for transcription and speaker diarization.
+  - Enhances transcription using a local or cloud-based **LLM** (Planned for Development).
 
-**Android App (DocBud - Frontend):**
+> Future versions will include a natural-language chat interface for reviewing and asking questions about past appointments.
 
-* Record audio directly within the app.
 
-**Python Service (Backend):**
+## In Progress
 
-* Core transcription and diarization using AssemblyAI.
-
-## Current Development Focus
-
-* Implementing networking in the Android app to upload audio files.
-* Developing the Python backend API service to receive audio, perform transcription/diarization, and return results.
+- Improve audio playback functionality
+- Improve error handling
+- Integrate an LLM to cleanup transcripts
+- Add appointment summaries logic
