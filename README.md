@@ -3,7 +3,7 @@
 
 ## Overview
 
-DocBud is a intelligent mobile assistant designed to record, transcribe, and summarize medical appointments. 
+DocBud is an intelligent mobile assistant designed to record, transcribe, and summarize medical appointments. 
 It aims to make healthcare conversations more accessible for users.
 
 The system is split into two main components:
