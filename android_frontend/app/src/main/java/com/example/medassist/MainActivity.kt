@@ -46,6 +46,14 @@ import androidx.compose.foundation.lazy.LazyColumn // Ensure these are here
 import androidx.compose.foundation.lazy.items     // Ensure these are here
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.material.icons.filled.Delete
+import android.media.MediaPlayer
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.foundation.clickable
+import androidx.core.view.WindowCompat
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.ui.text.style.TextAlign
+
+
 
 enum class AppScreen {
     MAIN_TRANSCRIPTION,
@@ -68,6 +76,9 @@ class MainActivity : ComponentActivity() {
     // Initialize Room Database and DAO (lazily)
     private val database by lazy { AppDatabase.getDatabase(applicationContext) }
     private val recordingDao by lazy { database.recordingDao() }
+
+    // --- Member variable for MediaPlayer ---
+    private var MPlayer: MediaPlayer? = null
 
     /**
      * Copies the content of a given Uri to a temporary file in the app's cache directory.
@@ -238,6 +249,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false) // Enable edge-to-edge
         setContent {
             MedAssistTheme {
                 var showDeleteConfirmationDialog by remember { mutableStateOf(false) }
@@ -249,6 +261,23 @@ class MainActivity : ComponentActivity() {
                 var activeUserGivenName by remember { mutableStateOf<String?>(null) }
                 var activeTranscriptionStateDisplay by remember { mutableStateOf<String?>("N/A") } // Holds transcript or status
                 var activeRecordingId by remember { mutableStateOf<Int?>(null) } // Holds DB ID of the active recording
+
+                // --- Compose states for playback UI, managed by MainActivity ---
+                var currentlyPlayingFilePath by remember { mutableStateOf<String?>(null) }
+                var isAudioPlaying by remember { mutableStateOf(false) }
+
+                // Lambdas to update the playback states from MainActivity methods
+                val updateCurrentlyPlayingPathLambda = { path: String? -> currentlyPlayingFilePath = path }
+                val updateIsAudioPlayingLambda = { playing: Boolean -> isAudioPlaying = playing }
+
+                // Consolidated play/stop toggle function to pass down
+                val togglePlayStopForFile = { filePathToToggle: String ->
+                    if (isAudioPlaying && currentlyPlayingFilePath == filePathToToggle) {
+                        stopAudioPlayback(updateCurrentlyPlayingPathLambda, updateIsAudioPlayingLambda)
+                    } else {
+                        playAudioFile(filePathToToggle, updateCurrentlyPlayingPathLambda, updateIsAudioPlayingLambda)
+                    }
+                }
 
                 // This lambda handles new recordings after they are named
                 val startAutoTranscriptionAndNavigate = { filePath: String, userGivenName: String ->
@@ -370,6 +399,13 @@ class MainActivity : ComponentActivity() {
 
                 when (currentScreen) {
                     AppScreen.MAIN_TRANSCRIPTION -> {
+                        // If audio was somehow playing and we got here, stop it.
+                        // This might happen if user uses system back from Detail/List while playing.
+                        LaunchedEffect(isAudioPlaying) { // Stop if navigating here and audio is playing
+                            if (isAudioPlaying) {
+                                stopAudioPlayback(updateCurrentlyPlayingPathLambda, updateIsAudioPlayingLambda)
+                            }
+                        }
                         TranscriptionScreen(
                             startRecording = ::startRecording,
                             stopRecording = ::stopRecording,
@@ -384,58 +420,47 @@ class MainActivity : ComponentActivity() {
                     }
 
                     AppScreen.RECORDINGS_LIST -> {
+                        LaunchedEffect(isAudioPlaying) {
+                            if (isAudioPlaying && activeRecordingId != null) { // Check if detail screen was active
+                                // This logic is tricky: which file was playing?
+                                // Better to handle stop in onBack of DetailScreen.
+                            }
+                        }
                         // Collect the Flow of recordings from the DAO as state
                         val recordingsListFromDb by recordingDao.getAllRecordings()
                             .collectAsState(initial = emptyList())
 
                         RecordingsListScreen(
                             recordings = recordingsListFromDb, // Pass List<RecordingItem>
-                            onRecordingSelected = { recordingItem -> // Changed name to onRecordingSelected for clarity
+                            onRecordingSelected = { recordingItem ->
                                 activeRecordingId = recordingItem.id
-                                activeUserGivenName = recordingItem.userGivenName
-                                activeRecordingFilePath = recordingItem.filePath
-                                // Set initial display for detail screen from the selected item's current DB state
-                                activeTranscriptionStateDisplay =
-                                    recordingItem.transcript ?: recordingItem.transcriptionStatus
+                                // activeUserGivenName, activeRecordingFilePath, activeTranscriptionStateDisplay
+                                // will be fetched by RecordingDetailScreen using the ID and DAO
                                 currentScreen = AppScreen.RECORDING_DETAIL
-                            },
-                            onPlayRecording = { recordingItem ->
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    "Play ${recordingItem.userGivenName} TBD",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                                // TODO: Implement MediaPlayer logic using recordingItem.filePath
                             },
                             onDeleteRecordingClicked = { itemToDelete -> // <<< HANDLE CALLBACK
                                 recordingToDelete = itemToDelete
                                 showDeleteConfirmationDialog = true
                             },
-                            onDismiss = { currentScreen = AppScreen.MAIN_TRANSCRIPTION }
+                            onDismiss = { // Navigating from List back to Main
+                                if (isAudioPlaying) { // If anything was playing (though list doesn't play now)
+                                    stopAudioPlayback(updateCurrentlyPlayingPathLambda, updateIsAudioPlayingLambda)
+                                }
+                                currentScreen = AppScreen.MAIN_TRANSCRIPTION
+                            },
+                            // Pass playback state down
+                            currentlyPlayingFilePath = currentlyPlayingFilePath,
+                            isAudioPlaying = isAudioPlaying
                         )
                     }
 
                     AppScreen.RECORDING_DETAIL -> {
-                        val currentIdToDetail =
-                            activeRecordingId // The ID of the recording to show details for
-
-                        if (currentIdToDetail != null) {
-                            // Pass the ID and DAO to RecordingDetailScreen.
-                            // RecordingDetailScreen will be responsible for observing the data.
+                        activeRecordingId?.let { recId ->
                             RecordingDetailScreen(
-                                recordingId = currentIdToDetail,
-                                recordingDao = recordingDao, // Pass the DAO
-                                onPlayRecording = { recId, filePath -> // RecordingDetailScreen will provide these
-                                    Log.d(
-                                        TAG,
-                                        "Play requested from DetailScreen for ID: $recId, Path: $filePath"
-                                    )
-                                    // TODO: Implement actual MediaPlayer logic here in MainActivity using 'filePath'
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        "Play (ID: $recId, Path: $filePath) TBD",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                recordingId = recId,
+                                recordingDao = recordingDao,
+                                onPlayRecordingRequest = { filePathFromDetail ->
+                                    togglePlayStopForFile(filePathFromDetail)
                                 },
                                 onRetryTranscription = { recIdToRetry, filePathToRetry, userGivenNameToRetry -> // RecordingDetailScreen provides these
                                     // Set the shared state to show "Retrying..." immediately on the detail screen
@@ -471,28 +496,21 @@ class MainActivity : ComponentActivity() {
                                         recordingItemToDelete // Set state for confirmation dialog
                                     showDeleteConfirmationDialog = true
                                 },
-                                onBack = {
+                                onBack = { // Navigating from Detail back to List
+                                    if (isAudioPlaying) {
+                                        stopAudioPlayback(updateCurrentlyPlayingPathLambda, updateIsAudioPlayingLambda)
+                                    }
                                     currentScreen = AppScreen.RECORDINGS_LIST
-                                    activeRecordingId =
-                                        null // Clear active ID when going back to the list
-                                    activeUserGivenName = null
-                                    activeRecordingFilePath = null
-                                    activeTranscriptionStateDisplay = "N/A" // Reset display state
-                                }
+                                    activeRecordingId = null // Clear active ID when going back
+                                },
+                                // Pass playback state down
+                                currentlyPlayingFilePath = currentlyPlayingFilePath,
+                                isAudioPlaying = isAudioPlaying
                             )
-                        } else {
-                            // This case means we tried to navigate to RECORDING_DETAIL without setting activeRecordingId
-                            Log.e(
-                                TAG,
-                                "Error: Navigated to RECORDING_DETAIL without an activeRecordingId."
-                            )
-                            Text("Error: No Recording ID specified for details. Navigating back to list.")
-                            // Use LaunchedEffect to navigate back after a short delay if ID is null
-                            LaunchedEffect(Unit) {
-                                kotlinx.coroutines.delay(2000) // Show message for 2 seconds
-                                currentScreen = AppScreen.RECORDINGS_LIST
-                            }
+                        } ?: run { /* Error: No Recording ID. Navigating back. */
+                            LaunchedEffect(Unit){currentScreen = AppScreen.RECORDINGS_LIST}
                         }
+
                     }
                 }
             }
@@ -581,6 +599,78 @@ class MainActivity : ComponentActivity() {
         mediaRecorder = null // Clear the instance
         // audioFile remains, as it's the successfully saved file (or null if error)
     }
+
+    // --- Playback Control Functions ---
+    private fun playAudioFile(
+        filePath: String,
+        setCurrentlyPlayingPath: (String?) -> Unit, // Callback to update Compose state
+        setIsPlaying: (Boolean) -> Unit          // Callback to update Compose state
+    ) {
+        // Stop any current playback before starting a new one
+        // This ensures only one audio plays at a time and resources are released.
+        releaseMediaPlayerInstance()
+        setIsPlaying(false) // Update state to reflect that previous playback (if any) stopped
+        setCurrentlyPlayingPath(null)
+
+        Log.d(TAG, "Attempting to play: $filePath")
+        MPlayer = MediaPlayer().apply {
+            try {
+                setDataSource(filePath)
+                setOnPreparedListener { mp ->
+                    Log.d(TAG, "MediaPlayer prepared for: $filePath. Starting playback.")
+                    mp.start()
+                    setIsPlaying(true)
+                    setCurrentlyPlayingPath(filePath)
+                }
+                setOnCompletionListener {
+                    Log.d(TAG, "MediaPlayer playback completed for: $filePath")
+                    releaseMediaPlayerInstance() // Stop and release
+                    setIsPlaying(false)
+                    setCurrentlyPlayingPath(null)
+                }
+                setOnErrorListener { _, what, extra ->
+                    Log.e(TAG, "MediaPlayer Error for $filePath: what $what, extra $extra")
+                    releaseMediaPlayerInstance()
+                    setIsPlaying(false)
+                    setCurrentlyPlayingPath(null)
+                    Toast.makeText(applicationContext, "Error playing audio.", Toast.LENGTH_SHORT).show()
+                    true // Indicates error was handled
+                }
+                prepareAsync() // Prepare asynchronously
+            } catch (e: Exception) { // Catch IOException, IllegalStateException, etc. broadly
+                Log.e(TAG, "MediaPlayer setup failed for $filePath: ${e.message}")
+                Toast.makeText(applicationContext, "Cannot play this audio file.", Toast.LENGTH_SHORT).show()
+                releaseMediaPlayerInstance() // Clean up if setup failed
+                setIsPlaying(false)
+                setCurrentlyPlayingPath(null)
+            }
+        }
+    }
+
+    private fun stopAudioPlayback( // This function will be called by UI events or navigation
+        setCurrentlyPlayingPath: (String?) -> Unit,
+        setIsPlaying: (Boolean) -> Unit
+    ) {
+        releaseMediaPlayerInstance()
+        setIsPlaying(false)
+        setCurrentlyPlayingPath(null)
+    }
+
+    private fun releaseMediaPlayerInstance() { // Helper to centralize release logic
+        MPlayer?.apply {
+            try {
+                if (isPlaying) {
+                    stop()
+                }
+                reset()   // Reset to uninitialized state
+                release() // Release system resources
+                Log.d(TAG, "MediaPlayer released.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception during MediaPlayer release: ${e.message}")
+            }
+        }
+        MPlayer = null
+    }
 }
 
 
@@ -590,12 +680,12 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun TranscriptionScreen(
-    modifier: Modifier = Modifier,
     startRecording: (context: android.content.Context, updateUiOnStart: (filePath: String) -> Unit) -> Unit,
     stopRecording: (context: android.content.Context, updateUiOnStop: (filePath: String?) -> Unit) -> Unit,
     onViewRecordings: () -> Unit,
-    onRecordingNamedAndReadyForTranscription: (filePath: String, userGivenName: String) -> Unit
-) {
+    onRecordingNamedAndReadyForTranscription: (filePath: String, userGivenName: String) -> Unit,
+    modifier: Modifier = Modifier,
+    ) {
     val context = LocalContext.current
     var uiMessageText by remember { mutableStateOf("Tap 'Record Audio' to start.") }
     var isRecording by remember { mutableStateOf(false) }
@@ -640,53 +730,84 @@ fun TranscriptionScreen(
         )
     }
 
-    Column(modifier = modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("DocBud", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(bottom = 32.dp))
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Header
+        Text(
+            "DocBud",
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.padding(bottom = 32.dp)
+        )
 
-        Text(uiMessageText, modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()))
+        // Status message
+        Text(
+            text = uiMessageText,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp),
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center
+        )
 
-        Spacer(modifier = Modifier.height(20.dp))
-
+        // Buttons
         Button(
-            onClick = {
-                if (isRecording) {
-                    // When "Stop Recording" is clicked, tempFilePathForNaming should already hold the path
-                    stopRecording(context) { stoppedFilePath -> // stoppedFilePath is the confirmed saved path
-                        isRecording = false
-                        if (stoppedFilePath != null) {
-                            // tempFilePathForNaming should be the same as stoppedFilePath if startRecording set it.
-                            // If startRecording's callback for path wasn't used to set tempFilePathForNaming,
-                            // then use stoppedFilePath here. For safety, ensure it's from stopRecording.
-                            tempFilePathForNaming = stoppedFilePath
-                            showNameDialog = true
-                            uiMessageText = "Stopped: ${File(stoppedFilePath).name}. Please name it."
-                        } else { uiMessageText = "Recording failed or was cancelled." }
-                    }
-                } else { // Start Recording
-                    uiMessageText = "Checking permission..."
-                    when (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)) {
-                        PackageManager.PERMISSION_GRANTED -> {
-                            isRecording = true
-                            uiMessageText = "Starting recorder..."
-                            startRecording(context) { filePath -> // filePath from startRecording
-                                tempFilePathForNaming = filePath // Store it for when stopping
-                                uiMessageText = "Recording: ${File(filePath).name}"
+                onClick = {
+                    if (isRecording) {
+                        // When "Stop Recording" is clicked, tempFilePathForNaming should already hold the path
+                        stopRecording(context) { stoppedFilePath -> // stoppedFilePath is the confirmed saved path
+                            isRecording = false
+                            if (stoppedFilePath != null) {
+                                // tempFilePathForNaming should be the same as stoppedFilePath if startRecording set it.
+                                // If startRecording's callback for path wasn't used to set tempFilePathForNaming,
+                                // then use stoppedFilePath here. For safety, ensure it's from stopRecording.
+                                tempFilePathForNaming = stoppedFilePath
+                                showNameDialog = true
+                                uiMessageText =
+                                    "Stopped: ${File(stoppedFilePath).name}. Please name it."
+                            } else {
+                                uiMessageText = "Recording failed or was cancelled."
                             }
                         }
-                        else -> recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                }
-            },
-            enabled = !showNameDialog,
-            modifier = Modifier.fillMaxWidth(0.8f)
-        ) { Text(if (isRecording) "Stop Recording" else "Record Audio") }
+                    } else { // Start Recording
+                        uiMessageText = "Checking permission..."
+                        when (ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO
+                        )) {
+                            PackageManager.PERMISSION_GRANTED -> {
+                                isRecording = true
+                                uiMessageText = "Starting recorder..."
+                                startRecording(context) { filePath -> // filePath from startRecording
+                                    tempFilePathForNaming = filePath // Store it for when stopping
+                                    uiMessageText = "Recording: ${File(filePath).name}"
+                                }
+                            }
 
-        Spacer(modifier = Modifier.height(12.dp))
+                            else -> recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                },
+                enabled = !showNameDialog,
+                modifier = Modifier.fillMaxWidth(0.8f)
+            ) {
+                Text(if (isRecording) "Stop Recording" else "Record Audio")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+
         Button(
-            onClick = onViewRecordings,
-            enabled = !isRecording && !showNameDialog,
-            modifier = Modifier.fillMaxWidth(0.8f)
-        ) { Text("My Recordings") }
+                onClick = onViewRecordings,
+                enabled = !isRecording && !showNameDialog,
+                modifier = Modifier.fillMaxWidth(0.8f)
+            ) {
+                Text("My Recordings")
+            }
     }
 }
 
@@ -708,41 +829,49 @@ fun TranscriptionScreenPreview() {
 fun RecordingsListScreen(
     recordings: List<RecordingItem>,
     onRecordingSelected: (RecordingItem) -> Unit,
-    onPlayRecording: (RecordingItem) -> Unit,
+    //onPlayRecordingRequest: (RecordingItem) -> Unit,
     onDeleteRecordingClicked: (RecordingItem) -> Unit, // <<< NEW CALLBACK
     onDismiss: () -> Unit,
+    // Receive playback state
+    currentlyPlayingFilePath: String?,
+    isAudioPlaying: Boolean,
     modifier: Modifier = Modifier
 ) {
-    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-        ) {
-            Text(
-                "My Recordings",
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .systemBarsPadding() // For status bar
+            .padding(horizontal = 16.dp) // Horizontal padding for the whole screen
+    ) {
+        Text(
+            "My Recordings",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.padding(top = 16.dp, bottom = 16.dp) // Padding for title
+        )
             if (recordings.isEmpty()) {
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    Text("No recordings found. Start by making a new recording!")
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth(), // Takes up space
+                    contentAlignment = Alignment.Center
+                ) {   Text("No recordings found. Start by making a new recording!")
                 }
             } else {
-                LazyColumn(modifier = Modifier.weight(1f)) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f), // Takes up available space
+                    contentPadding = PaddingValues(bottom = 16.dp) // Add padding at the bottom of the list
+                ) {
                     items(recordings) { recordingItem -> // Iterate over RecordingItem
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp),
+                                .padding(vertical = 4.dp)
+                                .clickable { onRecordingSelected(recordingItem) },
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
@@ -754,30 +883,29 @@ fun RecordingsListScreen(
                                         text = "Recorded: ${formatMillisToDateTime(recordingItem.recordingDate)}", // Display formatted date from DB
                                         style = MaterialTheme.typography.bodySmall
                                     )
-                                    Text( // Display transcription status
+                                    Text(
                                         text = "Status: ${recordingItem.transcriptionStatus}",
                                         style = MaterialTheme.typography.bodySmall,
-                                        // Optionally, add color based on status
-                                        color = if (recordingItem.transcriptionStatus == "Failed") MaterialTheme.colorScheme.error else LocalContentColor.current
+                                        color = if (recordingItem.transcriptionStatus.startsWith("Failed")) MaterialTheme.colorScheme.error else LocalContentColor.current
                                     )
-                                }
-                                IconButton(onClick = { onPlayRecording(recordingItem) }) {
-                                    Icon(Icons.Filled.PlayArrow, contentDescription = "Play Recording")
                                 }
                                 IconButton(onClick = { onDeleteRecordingClicked(recordingItem) }) { // <<< NEW DELETE BUTTON
                                     Icon(Icons.Filled.Delete, contentDescription = "Delete Recording", tint = MaterialTheme.colorScheme.error)
-                                }
-                                IconButton(onClick = { onRecordingSelected(recordingItem) }) { // This triggers navigation to detail
-                                    Icon(Icons.AutoMirrored.Filled.Article, contentDescription = "View Details")
                                 }
                             }
                         }
                     }
                 }
             }
-        }
+        // Add space between list and button
         Spacer(modifier = Modifier.height(16.dp))
-        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            contentAlignment = Alignment.Center
+        ) {
             Button(onClick = onDismiss) {
                 Text("Back to Main Screen")
             }
@@ -830,10 +958,13 @@ fun RecordingNameDialog(
 fun RecordingDetailScreen(
     recordingId: Int,
     recordingDao: RecordingDao, // Pass the DAO
-    onPlayRecording: (recordingId: Int, filePath: String) -> Unit,
+    onPlayRecordingRequest: (filePath: String) -> Unit, // Takes filePath,
     onRetryTranscription: (recordingId: Int, filePath: String, userGivenName: String) -> Unit,
     onDeleteThisRecording: (RecordingItem) -> Unit, // Passes the full item to delete
     onBack: () -> Unit,
+    // Receive playback state
+    currentlyPlayingFilePath: String?,
+    isAudioPlaying: Boolean,
     modifier: Modifier = Modifier
 ) {
     // Observe the RecordingItem from the database using its ID
@@ -868,6 +999,7 @@ fun RecordingDetailScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .systemBarsPadding()
                     .padding(16.dp)
             ) {
                 Text("Recording Details", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(bottom = 16.dp))
@@ -875,13 +1007,20 @@ fun RecordingDetailScreen(
                 Text("Recorded: ${formatMillisToDateTime(item.recordingDate)}", style = MaterialTheme.typography.bodyMedium)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Button(
-                    onClick = { onPlayRecording(item.id, item.filePath) },
+                Button( // Play/Stop Button for this specific item
+                    onClick = { onPlayRecordingRequest(item.filePath) },
                     modifier = Modifier.fillMaxWidth(0.8f).align(Alignment.CenterHorizontally)
                 ) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
+                    Icon(
+                        imageVector = if (isAudioPlaying && currentlyPlayingFilePath == item.filePath) {
+                            Icons.Filled.Stop
+                        } else {
+                            Icons.Filled.PlayArrow
+                        },
+                        contentDescription = if (isAudioPlaying && currentlyPlayingFilePath == item.filePath) "Stop Audio" else "Play Audio"
+                    )
                     Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                    Text("Play Audio (TBD)")
+                    Text(if (isAudioPlaying && currentlyPlayingFilePath == item.filePath) "Stop Audio" else "Play Audio")
                 }
                 Spacer(modifier = Modifier.height(16.dp))
 
