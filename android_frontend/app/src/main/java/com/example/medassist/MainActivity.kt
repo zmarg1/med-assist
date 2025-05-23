@@ -53,6 +53,12 @@ import androidx.core.view.WindowCompat
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.ui.text.style.TextAlign
 
+import android.content.Context
+import android.graphics.pdf.PdfDocument
+import androidx.core.content.FileProvider
+import android.content.Intent
+import android.content.ActivityNotFoundException
+
 
 
 enum class AppScreen {
@@ -60,6 +66,94 @@ enum class AppScreen {
     RECORDINGS_LIST,
     RECORDING_DETAIL
 }
+
+fun createTranscriptPdf(context: Context, fileNamePrefix: String, transcriptText: String): File? {
+    return try {
+        val document = PdfDocument()
+        val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create() // A4 size in points
+        val page = document.startPage(pageInfo)
+
+        val canvas = page.canvas
+        val paint = android.graphics.Paint().apply {
+            textSize = 12f
+        }
+
+        val lines = transcriptText.chunked(90) // basic word wrap
+        var y = 30f
+        for (line in lines) {
+            canvas.drawText(line, 30f, y, paint)
+            y += 20f
+        }
+
+        document.finishPage(page)
+
+        val outputDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+        val file = File(outputDir, "${fileNamePrefix}_transcript.pdf")
+        FileOutputStream(file).use {
+            document.writeTo(it)
+        }
+        document.close()
+        file
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
+}
+
+fun sharePdf(context: Context, pdfFile: File) {
+    try {
+        val pdfUri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            pdfFile
+        )
+
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, pdfUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        context.startActivity(Intent.createChooser(intent, "Share transcript PDF via"))
+    } catch (e: Exception) {
+        Toast.makeText(context, "Unable to share PDF: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        e.printStackTrace()
+    }
+}
+
+
+fun viewPdf(context: Context, pdfFile: File) {
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.provider",
+        pdfFile
+    )
+
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/pdf")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+
+    // Let user choose app — sometimes helps trigger Google Drive
+    val chooser = Intent.createChooser(intent, "Open PDF with")
+
+    // Grant URI permission to all apps that can handle this intent
+    val resInfoList = context.packageManager.queryIntentActivities(chooser, PackageManager.MATCH_DEFAULT_ONLY)
+    for (resInfo in resInfoList) {
+        val packageName = resInfo.activityInfo.packageName
+        context.grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+
+    try {
+        context.startActivity(chooser)
+    } catch (e: ActivityNotFoundException) {
+        Toast.makeText(context, "No app found to open PDFs. Try installing Adobe Reader or another PDF viewer.", Toast.LENGTH_LONG).show()
+    }
+}
+
+
+
+
 
 // Helper function to format timestamp (can be placed at file level or in a utils file)
 fun formatMillisToDateTime(millis: Long): String {
@@ -957,35 +1051,31 @@ fun RecordingNameDialog(
 @Composable
 fun RecordingDetailScreen(
     recordingId: Int,
-    recordingDao: RecordingDao, // Pass the DAO
-    onPlayRecordingRequest: (filePath: String) -> Unit, // Takes filePath,
+    recordingDao: RecordingDao,
+    onPlayRecordingRequest: (filePath: String) -> Unit,
     onRetryTranscription: (recordingId: Int, filePath: String, userGivenName: String) -> Unit,
-    onDeleteThisRecording: (RecordingItem) -> Unit, // Passes the full item to delete
+    onDeleteThisRecording: (RecordingItem) -> Unit,
     onBack: () -> Unit,
-    // Receive playback state
     currentlyPlayingFilePath: String?,
     isAudioPlaying: Boolean,
     modifier: Modifier = Modifier
 ) {
-    // Observe the RecordingItem from the database using its ID
+    val context = LocalContext.current
     val recordingItemState by recordingDao.getRecordingById(recordingId).collectAsState(initial = null)
-    val item = recordingItemState // The current RecordingItem or null
+    val item = recordingItemState
 
-    // Timeout effect if item remains null
-    LaunchedEffect(recordingId, item) { // Re-evaluate if ID changes or item loads
-        if (item == null) { // If item is null after initial composition or ID change
-            kotlinx.coroutines.delay(3000) // Wait for DB to potentially load
-            if (recordingItemState == null) { // Check the state variable again
+    LaunchedEffect(recordingId, item) {
+        if (item == null) {
+            kotlinx.coroutines.delay(3000)
+            if (recordingItemState == null) {
                 Log.w("RecordingDetailScreen", "Timeout: Recording ID $recordingId still not found. Navigating back.")
-                // Toast.makeText(LocalContext.current, "Could not load recording details.", Toast.LENGTH_SHORT).show() // Context needed
-                onBack() // Navigate back if item is still null
+                onBack()
             }
         }
     }
 
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (item == null) {
-            // Show loading state while the item is being fetched or if not found initially
             Column(
                 modifier = Modifier.fillMaxSize().padding(16.dp),
                 verticalArrangement = Arrangement.Center,
@@ -995,11 +1085,11 @@ fun RecordingDetailScreen(
                 Text("Loading recording details...", modifier = Modifier.padding(top = 8.dp))
             }
         } else {
-            // Item is loaded, display its details
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .systemBarsPadding()
+                    .verticalScroll(rememberScrollState())
                     .padding(16.dp)
             ) {
                 Text("Recording Details", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(bottom = 16.dp))
@@ -1007,21 +1097,18 @@ fun RecordingDetailScreen(
                 Text("Recorded: ${formatMillisToDateTime(item.recordingDate)}", style = MaterialTheme.typography.bodyMedium)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Button( // Play/Stop Button for this specific item
+                Button(
                     onClick = { onPlayRecordingRequest(item.filePath) },
                     modifier = Modifier.fillMaxWidth(0.8f).align(Alignment.CenterHorizontally)
                 ) {
                     Icon(
-                        imageVector = if (isAudioPlaying && currentlyPlayingFilePath == item.filePath) {
-                            Icons.Filled.Stop
-                        } else {
-                            Icons.Filled.PlayArrow
-                        },
+                        imageVector = if (isAudioPlaying && currentlyPlayingFilePath == item.filePath) Icons.Filled.Stop else Icons.Filled.PlayArrow,
                         contentDescription = if (isAudioPlaying && currentlyPlayingFilePath == item.filePath) "Stop Audio" else "Play Audio"
                     )
                     Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                     Text(if (isAudioPlaying && currentlyPlayingFilePath == item.filePath) "Stop Audio" else "Play Audio")
                 }
+
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text("Status: ${item.transcriptionStatus}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
@@ -1029,53 +1116,110 @@ fun RecordingDetailScreen(
                 val isError = item.transcriptionStatus.contains("Failed", true) ||
                         item.transcriptionStatus.contains("Error", true) ||
                         item.transcriptionStatus.contains("Exception", true)
-                val isInProgress = item.transcriptionStatus.contains("in progress...", ignoreCase = true) ||
-                        item.transcriptionStatus.contains("Transcribing", ignoreCase = true) ||
-                        item.transcriptionStatus.contains("Retrying", ignoreCase = true) ||
+                val isInProgress = item.transcriptionStatus.contains("in progress...", true) ||
+                        item.transcriptionStatus.contains("Transcribing", true) ||
+                        item.transcriptionStatus.contains("Retrying", true) ||
                         item.transcriptionStatus == "Pending Transcription" ||
                         item.transcriptionStatus == "Pending Naming"
 
                 Log.d("UIState", "Transcript: ${item.transcript}, Status: ${item.transcriptionStatus}, isError=$isError, isInProgress=$isInProgress")
-                if (isInProgress && !isError) { // Don't show progress if it's an error state already
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+
+                if (isInProgress && !isError) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    ) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(item.transcriptionStatus, style = MaterialTheme.typography.bodyLarge)
                     }
                 } else if (isError) {
-                    Text(item.transcript ?: item.transcriptionStatus, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(bottom = 8.dp))
-                    Button(onClick = { onRetryTranscription(item.id, item.filePath, item.userGivenName) }, modifier = Modifier.padding(top = 8.dp)) {
+                    val shortErrorMessage = item.transcriptionStatus
+                        .replace("LLM_ERROR:", "")
+                        .replace("ERROR:", "")
+                        .replace("LLM_SKIPPED:", "")
+                        .split("\n")
+                        .firstOrNull()
+                        ?.trim()
+                        ?.take(200)
+                        ?: "An error occurred during transcription."
+
+                    Text(
+                        text = shortErrorMessage,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
+                    )
+
+                    Button(
+                        onClick = {
+                            onRetryTranscription(item.id, item.filePath, item.userGivenName)
+                        },
+                        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp)
+                    ) {
                         Text("Retry Transcription")
                     }
                 }
 
-                Text("Transcript:", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top= if (isError || isInProgress) 8.dp else 0.dp, bottom=8.dp))
+                Text("Transcript:", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = if (isError || isInProgress) 8.dp else 0.dp, bottom = 8.dp))
+
                 Box(modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
                     Text(
-                        text = if (!isError && !isInProgress) (item.transcript ?: "No transcript available.") else (if(isInProgress) "" else "Transcript will appear here upon successful retry."),
+                        text = if (!isError && !isInProgress) (item.transcript ?: "No transcript available.") else (if (isInProgress) "" else "Transcript will appear here upon successful retry."),
                         style = MaterialTheme.typography.bodyLarge
                     )
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
-                Button( // Delete Button
-                    onClick = { onDeleteThisRecording(item) }, // Pass the full item
+
+                // ✅ New Row with "View PDF" and "Share PDF"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Button(onClick = {
+                        val pdf = createTranscriptPdf(context, item.userGivenName, item.transcript ?: "")
+                        if (pdf != null) viewPdf(context, pdf)
+                        else Toast.makeText(context, "Failed to open PDF.", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("View PDF")
+                    }
+
+                    Button(onClick = {
+                        val pdf = createTranscriptPdf(context, item.userGivenName, item.transcript ?: "")
+                        if (pdf != null) sharePdf(context, pdf)
+                        else Toast.makeText(context, "Failed to share PDF.", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("Share PDF")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = { onDeleteThisRecording(item) },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     modifier = Modifier.fillMaxWidth(0.8f).align(Alignment.CenterHorizontally)
                 ) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Delete") // Add import androidx.compose.material.icons.filled.Delete
+                    Icon(Icons.Filled.Delete, contentDescription = "Delete")
                     Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                     Text("Delete This Recording")
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
-                Button(onClick = onBack, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+
+                Button(
+                    onClick = { onBack() },
+                    modifier = Modifier.fillMaxWidth(0.8f).align(Alignment.CenterHorizontally)
+                ) {
                     Text("Back to Recordings List")
                 }
             }
         }
     }
 }
+
+
 
 @Composable
 fun ConfirmDeleteDialog(
