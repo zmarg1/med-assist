@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: medassist-backend
+    env: python
+    plan: free
+    buildCommand: |
+      ./build.sh
+      pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ASSEMBLYAI_API_KEY
+        sync: false

@@ -549,4 +549,4 @@ if __name__ == '__main__':
     if not OPENAI_API_KEY:
         app.logger.warning("OPENAI_API_KEY IS MISSING. LLM cleaning will be skipped.")
     app.logger.info("Starting Flask server...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
