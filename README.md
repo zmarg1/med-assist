@@ -1,5 +1,5 @@
 # DocBud
-*Note: This is an active development project and not yet production-ready.*
+*Note: This is an personal project and not intended for public release.*
 
 ## Overview
 
@@ -9,21 +9,21 @@ It aims to make healthcare conversations more accessible for users.
 The system is split into two main components:
 
 - **Android Frontend:** A mobile app that allows users to:
-  - Record new audio from doctor visits.
-  - View transcriptions.
-  - Download or share transcripts as PDFs.
+  - Record new audio from doctor visits
+  - View transcriptions
+  - Download or share transcripts as PDFs
 
 - **Python Backend:** A Flask-based API service that:
-  - Accepts audio file uploads.
-  - Uses **AssemblyAI** for transcription and speaker diarization.
-  - Enhances transcription using a local or cloud-based **LLM** (Planned for Development).
+  - Accepts audio file uploads
+  - Uses **AssemblyAI** for transcription and speaker diarization
 
-> Future versions will include a natural-language chat interface for reviewing and asking questions about past appointments.
+## Future Steps
 
-
-## In Progress
-
-- Improve audio playback functionality
-- Improve error handling
-- Integrate an LLM to cleanup transcripts
-- Add appointment summaries logic
+- Improve diarization accuracy via rule-based logic and LLM cleanup
+- Add appointment summarization functionality
+- Improve the UI
+- Replace AssemblyAI with **OpenAI Whisper**/**Ollama** and **PyAnnote**  for improved:
+  - Cost control
+  - Data privacy
+  - Customization
+  - Performance
