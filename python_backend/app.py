@@ -1,14 +1,12 @@
 """DocBud backend (app.py).
 
 A Flask API that accepts audio uploads, sends them to AssemblyAI for
-transcription and diarisation.
-Integrates AssemblyAI and optional LLM post-processing (OpenAI or Ollama).
+transcription and diarisation, with optional LLM post-processing.
 """
 
 from __future__ import annotations
 
 # ── Standard Library ──────────────────────────────────────────────────────────
-import json
 import logging
 import os
 import subprocess
@@ -89,23 +87,8 @@ else:
         openai_client = None
 
 
-# ── Transcript Processing Helpers ─────────────────────────────────────────────
-# Functions for basic validation and light rule-based cleanup
-
-def allowed_file(filename: str) -> bool:
-    """Check if a given filename has an allowed extension.
-
-    Args:
-        filename: Name of the uploaded file.
-
-    Returns:
-        True if file has an allowed extension, else False.
-    """
-    return (
-        "." in filename
-        and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-    )
-
+# ── LLM Transcript Cleanup  ───────────────────────────────────────────────────
+# Various functions to cleanup transcript locally and externally via LLMs and light rules.
 
 def apply_light_rules(text_segments: list[dict]) -> list[dict]:
     """Apply simple, rule-based edits to transcript segments.
@@ -132,10 +115,7 @@ def apply_light_rules(text_segments: list[dict]) -> list[dict]:
     return cleaned_segments
 
 
-# ── LLM Transcript Cleanup (OpenAI and Local Ollama) ──────────────────────────
-# Sends transcript to OpenAI or local LLM for conservative cleanup
-
-def clean_transcript_with_openai_llm(diarized_transcript_text: str) -> str:
+def clean_transcript_openai(diarized_transcript_text: str) -> str:
     """Cleans a diarized medical transcript using OpenAI's GPT model.
 
     This function sends the transcript to OpenAI (e.g., GPT-3.5-turbo)
@@ -201,7 +181,7 @@ def clean_transcript_with_openai_llm(diarized_transcript_text: str) -> str:
         return f"LLM_ERROR: Unexpected error.\n{diarized_transcript_text}"
 
 
-def clean_with_local_llm(transcript_text_input: str) -> str:
+def clean_transcript_ollama(transcript_text_input: str) -> str:
     """Cleans transcript using a local LLM via Ollama CLI.
 
     Sends a diarized transcript string to the locally running Ollama
@@ -255,7 +235,22 @@ def clean_with_local_llm(transcript_text_input: str) -> str:
 # ── Transcription Logic (AssemblyAI) ──────────────────────────────────────────
 # Handles audio-to-text conversion using AssemblyAI with speaker diarization.
 
-def perform_transcription_with_assemblyai(audio_path: str) -> str:
+def allowed_file(filename: str) -> bool:
+    """Check if a given filename has an allowed extension.
+
+    Args:
+        filename: Name of the uploaded file.
+
+    Returns:
+        True if file has an allowed extension, else False.
+    """
+    return (
+        "." in filename
+        and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+    )
+
+
+def perform_transcription(audio_path: str) -> str:
     """Transcribes an audio file using AssemblyAI with speaker diarization.
 
     Sends a standardized WAV file to AssemblyAI, waits for transcription,
@@ -398,7 +393,7 @@ def upload_audio_file_route():
         app.logger.debug("FFmpeg STDERR:\n%s", conversion_result.stderr.decode())
 
         # Transcribe the processed audio
-        transcript_result = perform_transcription_with_assemblyai(processed_path)
+        transcript_result = perform_transcription(processed_path)
 
         if transcript_result.startswith("ERROR:") or transcript_result.startswith("LLM_"):
             return jsonify({
@@ -431,14 +426,6 @@ def upload_audio_file_route():
                 app.logger.info("Deleted temp WAV: %s", processed_path)
             except Exception as cleanup_err:
                 app.logger.warning("Failed to delete temp WAV: %s", cleanup_err)
-
-        # Optionally clean up original file (commented out)
-        # if original_path != processed_path and os.path.exists(original_path):
-        #     try:
-        #         os.remove(original_path)
-        #         app.logger.info("Deleted original upload: %s", original_path)
-        #     except Exception as cleanup_err:
-        #         app.logger.warning("Failed to delete original upload: %s", cleanup_err)
 
 
 def configure_symlinks() -> None:
